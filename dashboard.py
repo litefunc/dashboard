@@ -19,8 +19,15 @@ pd.set_option("display.max_columns", 1000)
 pd.set_option('display.expand_frame_repr', False)
 pd.set_option('display.unicode.east_asian_width', True)
 def mymerge(x, y):
-    m = pd.merge(x, y, on=[i for i in list(x) if i in list(y)], how='outer')
-    return m
+    on = [i for i in list(x) if i in list(y)]
+    try:
+        m = pd.merge(x, y, on=on, how='outer')
+        return m
+    except Exception as e:
+        for i in on:
+            print(i, x[i].dtypes, y[i].dtypes)
+        raise e
+
 
 conn_lite = conn_local_lite('summary.sqlite3')
 cur_lite = conn_lite.cursor()
@@ -32,10 +39,11 @@ security = sqlc.selectAll('ifrs前後-綜合損益表-證券業', conn_lite).ren
 insurance = sqlc.selectAll('ifrs前後-綜合損益表-保險業', conn_lite).replace('None', np.nan)
 other = sqlc.selectAll('ifrs前後-綜合損益表-其他業', conn_lite).rename(columns={'收入':'營業收入'}).replace('None', np.nan)
 
+for df in [normal, hold, bank, security, insurance, other]:
+    floatClumns = [col for col in list(df) if col not in ['年', '季', '公司代號', '公司名稱']]
+    df[floatClumns] = df[floatClumns].astype(float)
+
 inc = cytoolz.reduce(mymerge, [normal, hold, bank, security, insurance, other])
-inc.dtypes
-floatClumns = [col for col in list(inc) if col not in ['年', '季', '公司代號', '公司名稱']]
-inc[floatClumns] = inc[floatClumns].astype(float)
 
 def change1(df):
     df0 = df[[x for x in list(df) if df[x].dtype == 'O']]
@@ -49,11 +57,10 @@ def change1(df):
 
 inc=inc.groupby(['公司代號', '年']).apply(change1).reset_index(drop=True)
 inc[floatClumns]=inc[floatClumns].rolling(window=4).sum()
-# inc[col1]=inc[col1].rolling(window=4).sum()
 inc['grow'] = inc.groupby(['公司代號'])['本期綜合損益總額'].pct_change(1)
-inc['grow.ma'] = inc.groupby(['公司代號'])['grow'].apply(pd.rolling_mean, 24)*4
-inc['本期綜合損益總額.wma'] = inc.groupby(['公司代號'])['本期綜合損益總額'].apply(pd.ewma, com=19)*4
-inc['本期綜合損益總額.ma'] = inc.groupby('公司代號')['本期綜合損益總額'].apply(pd.rolling_mean, 12)*4
+inc['grow.ma'] = inc.groupby(['公司代號'])['grow'].rolling(24).mean().reset_index(drop=True)*4
+inc['本期綜合損益總額.wma'] = inc.groupby(['公司代號'])['本期綜合損益總額'].apply(lambda x: x.ewm(com=19).mean())*4
+inc['本期綜合損益總額.ma'] = inc.groupby('公司代號')['本期綜合損益總額'].rolling(12).mean().reset_index(drop=True)*4
 inc['營業收入(百萬元)'] = inc['營業收入']/1000
 # inc = inc[['年',  '季',  '公司代號', '公司名稱', '營業收入(百萬元)', '本期淨利（淨損）', '本期綜合損益總額', '基本每股盈餘（元）', '本期綜合損益總額.wma', '本期綜合損益總額.ma', 'grow', 'grow.ma']]
 # inc = inc.sort_values(['公司代號', '年', '季'])
@@ -110,12 +117,12 @@ m = m[['公司代號', '公司名稱', '產業別', '本期淨利（淨損）', 
 
 conn_lite = conn_local_lite('mysum.sqlite3')
 cur_lite = conn_lite.cursor()
-xl = m[(m['營業收入(百萬元)'] > 3000) & (m['本益比'] < 15) & (m['殖利率(%)'] > 5) & (m['股價淨值比'] < 1.5)].sort_values(['ave'])
-sql = 'DROP TABLE xlwings'
-cur_lite.execute(sql)
+xl = m[(m['營業收入(百萬元)'] > 3000) & (m['本益比'] < 15) & (m['本益比'] != 0) & (m['殖利率(%)'] > 5) & (m['股價淨值比'] < 1.5)].sort_values(['ave'])
+#sql = 'DROP TABLE xlwings'
+#cur_lite.execute(sql)
 xl = xl.reset_index(drop=True)
 xl['年月日'] = xl['年月日'].astype(str)
-xl.to_sql('xl', conn_lite, index=False)
+#xl.to_sql('xl', conn_lite, index=False)
 print('done')
 
 book = xlwt.Workbook()
@@ -137,7 +144,7 @@ for i in range(nrow):
     for j in range(ncol):
         sheet.write(i+1, j, xl.iloc[i,j])
 
-book.save('/home/david/Documents/dashboard1.ods')
+book.save('/home/david/Documents/dashboard.ods')
 
 # Book('/home/david/Desktop/dashboard.xlsx').sheets['new'].range(1, 1).options(index=False).value = xl
 print('finish')
